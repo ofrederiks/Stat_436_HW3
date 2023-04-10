@@ -1,0 +1,298 @@
+---
+title: "436HW3"
+author: "Olin Frederiks"
+date: "2023-03-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(tsibble)
+library(lubridate)
+library(feasts)
+library(tidygraph)
+library(ggraph)
+library(qgraph)
+library(igraph)
+library(ggmap)
+library(shiny)
+library(sf)
+library(plotly)
+```
+
+# [Bike Demand]
+
+```{r}
+bikeshare <- read_csv('https://uwmadison.box.com/shared/static/f16jmkkskylfl1hnd5rpslzduja929g2.csv')
+```
+
+**a.)**
+```{r}
+ggplot(bikeshare, aes(x = hr, y = count)) +
+  geom_line() +
+  facet_wrap(~weekday, ncol = 7) +
+  labs(x = 'Hour', y = 'Bike Demand')
+```
+
+**b.)**
+```{r}
+bikeshare_summary <- bikeshare %>%
+  group_by(yr, weekday, hr) %>%
+  summarise(q25 = quantile(count, 0.25),
+            q75 = quantile(count, 0.75))
+bikeshare_summary
+```
+
+**c.)**
+```{r}
+ggplot() +
+  geom_ribbon(data = bikeshare_summary[bikeshare_summary$yr == 1,], 
+              aes(x = hr, ymin = q25, ymax = q75), alpha = 0.2, fill = "blue") +
+  geom_ribbon(data = bikeshare_summary[bikeshare_summary$yr == 2,], 
+              aes(x = hr, ymin = q25, ymax = q75), alpha = 0.2, fill = "red") +
+  geom_line(data = bikeshare, aes(x = hr, y = count, color = factor(yr)), size = 1) +
+  facet_wrap(~weekday, ncol = 3) +
+  labs(title = "Hourly Bike Demand by Weekday",
+       x = "Hour",
+       y = "Count")
+```
+
+**d.)**
+
+Bike demand is generally higher during peak commuting hours (around 8am and 5pm) on weekdays, and more evenly distributed throughout the day on weekends.
+There is more variability in bike demand on weekdays compared to weekends.
+Overall, bike demand appears to be higher in the second year of data collection compared to the first year. The ribbon plot shows that the range of demand within each hour on each day of the week is wider in the second year, and the upper end of the demand range is generally higher.
+
+# [Calfresh Enrollment 1]
+
+```{r}
+calfresh <- read_csv("https://uwmadison.box.com/shared/static/rduej9hsc4w3mdethxnx9ccv752f22yr.csv") %>%
+  filter(date != "2019 Feb") %>%
+  mutate(date = yearmonth(date)) %>%
+  as_tsibble(key = county, index = date)
+```
+
+**a.)**
+```{r}
+calfresh_features <- calfresh %>%
+  features(calfresh, feature_set(tags = "trend"))
+```
+
+**b.)**
+```{r}
+calfresh_seasonal_strength <- calfresh_features %>%
+  select(county, seasonal_strength_year) %>%
+  group_by(county) %>%
+  summarize(seasonal_strength_year = mean(seasonal_strength_year, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(seasonal_strength_year) 
+
+top_counties <- calfresh_seasonal_strength %>% tail(10) %>% .$county
+bottom_counties <- calfresh_seasonal_strength %>% head(10) %>% .$county
+
+calfresh_top_bottom <- calfresh %>% 
+  filter(county %in% c(top_counties, bottom_counties))
+
+ggplot(calfresh_top_bottom, aes(x = date, y = calfresh, color = county)) +
+  geom_line() +
+  labs(x = "Date", y = "CalFresh Enrollment", title = "CalFresh Enrollment over Time for Top and Bottom Counties by Seasonal Strength") +
+  scale_color_discrete(name = "County") +
+  theme_bw()
+```
+
+**c.)**
+```{r}
+counties <- read_sf("https://uwmadison.box.com/shared/static/gropucqxgqm82yhq13do1ws9k16dnxq7.geojson")
+
+calfresh_counties <- left_join(counties, calfresh_features)
+
+# create choropleth map of seasonal strength by county
+ggplot() +
+  geom_sf(data = calfresh_counties, aes(fill = seasonal_strength_year)) +
+  scale_fill_viridis_c() +
+  labs(title = "Seasonal Strength of CalFresh Enrollment by County") +
+  theme_void()
+```
+
+**d.)**
+One possible visualization that makes use of dynamic queries for the CalFresh enrollment dataset would be to allow users to interactively explore how enrollment varies over time and across different counties.
+
+The visualization would consist of a time series plot that shows the overall trend of CalFresh enrollment in California over time, with a slider control that allows users to select a particular time period of interest. Below the time series plot, there would be a  map of California that shows the spatial distribution of CalFresh enrollment by county, with counties shaded according to their level of enrollment during the selected time period. Users could interact with the map by hovering over or clicking on individual counties to see more detailed information about their enrollment levels. The slider control and interactive map would enable users to explore the data at different levels of granularity, while the filtering options would allow users to examine how enrollment varies across different demographic and socioeconomic groups.
+ 
+# [Political Book Recommendations] 
+
+```{r}
+edges <- read_csv("https://raw.githubusercontent.com/krisrs1128/stat679_code/main/activities/week10/political-books-edges.csv", col_types = "cci")
+nodes <- read_csv("https://raw.githubusercontent.com/krisrs1128/stat679_code/main/activities/week10/political-books-nodes.csv", col_types = "ccc")
+```
+
+**a.)**
+```{r}
+pbr_graph <- tbl_graph(nodes = as_tibble(nodes), edges = as_tibble(edges), 
+                   node_key = "id", directed = FALSE) %>%
+  activate(nodes) %>%
+  mutate(political_ideology = as_factor(political_ideology))
+```
+
+**b.)**
+```{r}
+ggraph(pbr_graph, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point(aes(fill = political_ideology, stroke = 2)) +
+  scale_color_brewer(palette = "Dark2") +
+  geom_node_text(aes(label = label), repel = TRUE, max.overlaps = 100) +
+  theme_void()
+```
+
+**c.)**
+```{r}
+adj_mat <- as_adjacency_matrix(pbr_graph)
+node_colors <- ifelse(nodes$political_ideology == "liberal", "blue", "red")
+node_labels <- nodes$label
+qgraph(adj_mat, edge.color = "gray",
+       color = node_colors, labels = node_labels)
+```
+
+In the node-link view, we can easily identify the books with the most connections by looking for nodes with the largest size and/or degree. In the adjacency matrix, however, it is more difficult to identify the books with the highest degree centrality since the matrix shows only the binary connections between nodes.On the other hand, one example of a visual query that is easy to answer using the adjacency matrix but not the node-link view is to identify cliques or densely connected groups of nodes. In the adjacency matrix, we can identify such groups as blocks of dark cells. In the node-link view, however, it is more difficult to identify such groups since the connections between nodes may be more scattered and difficult to visually distinguish.
+
+# [NYC Rentals]
+
+```{r}
+airbnb <- read.csv("https://uwmadison.box.com/shared/static/zi72ugnpku714rbqo2og9tv2yib5xped.csv")
+```
+
+**a.)**
+```{r}
+ggplot(airbnb, aes(x = longitude, y = latitude, color = room_type)) +
+  geom_point() +
+  labs(x = "Longitude", y = "Latitude")
+```
+
+**b.)**
+```{r}
+ui <- fluidPage(
+  plotOutput("scatterplot"),
+  br(),
+  sliderInput("price_slider", "Price Range", min = 0, max = 1000, value = c(0, 1000)),
+  br(),
+  plotOutput("price_hist"),
+  br(),
+  verbatimTextOutput("selected_points")
+)
+
+server <- function(input, output) {
+  output$scatterplot <- renderPlot({
+    airbnb %>%
+      filter(price >= input$price_slider[1] & price <= input$price_slider[2]) %>%
+      ggplot(aes(x = longitude, y = latitude, color = room_type)) +
+      geom_point() +
+      labs(x = "Longitude", y = "Latitude", title = "Manhattan Airbnb Rentals")
+  })
+  
+  output$price_hist <- renderPlot({
+    airbnb %>%
+      filter(price >= input$price_slider[1] & price <= input$price_slider[2]) %>%
+      ggplot(aes(x = price)) +
+      geom_histogram(binwidth = 25) +
+      labs(x = "Price", y = "Count", title = "Distribution of Airbnb Prices")
+  })
+  
+  output$selected_points <- renderText({
+    paste("Selected points:", toString(airbnb %>%
+                                          filter(price >= input$price_slider[1] & price <= input$price_slider[2]) %>%
+                                          select(id)))
+  })
+}
+
+shinyApp(ui, server)
+```
+
+**c.)**
+```{r}
+ui <- fluidPage(
+  plotlyOutput("scatterplot"),
+  br(),
+  sliderInput("price_slider", "Price Range", min = 0, max = 1000, value = c(0, 1000)),
+  br(),
+  plotOutput("price_hist"),
+  br(),
+  verbatimTextOutput("selected_points")
+)
+
+server <- function(input, output) {
+  output$scatterplot <- renderPlotly({
+    airbnb %>%
+      filter(price >= input$price_slider[1] & price <= input$price_slider[2]) %>%
+      plot_ly(x = ~longitude, y = ~latitude, color = ~room_type, source = "scatterplot") %>%
+      add_markers() %>%
+      layout(xaxis = list(title = "Longitude"), yaxis = list(title = "Latitude"), title = "Manhattan Airbnb Rentals")
+  })
+  
+  output$price_hist <- renderPlot({
+    airbnb %>%
+      filter(price >= input$price_slider[1] & price <= input$price_slider[2]) %>%
+      ggplot(aes(x = price)) +
+      geom_histogram(binwidth = 25) +
+      labs(x = "Price", y = "Count", title = "Distribution of Airbnb Prices")
+  })
+  
+  output$selected_points <- renderText({
+    brushed_data <- event_data("plotly_selected", source = "scatterplot")
+    if (!is.null(brushed_data)) {
+      paste("Selected points:", toString(brushed_data$id))
+    } else {
+      "Select points on the scatterplot to see their IDs."
+    }
+  })
+}
+
+shinyApp(ui, server)
+```
+
+**d.)**
+The resulting visualization of Airbnb rentals in Manhattan, New York City, contains a scatterplot and a histogram. A slider input for price range filters the scatterplot, which shows the latitude and longitude of each rental along with the type of room (entire home/apartment, private room, or shared room) and its associated color. The distribution of rental rates within the chosen price range is shown by the histogram. Users of the reverse graphical query can pick particular rentals by sweeping their cursor over the scatterplot; the selected rentals' IDs are then shown as text. This feature gives consumers more interactive control over the visualization and enables them to locate and identify particular rentals.
+
+I would advise a friend of mine to look into Airbnb rentals in Manhattan based on this visualization because it seems to have a variety of rental alternatives in terms of room kinds and costs. Also, consumers may filter and choose rentals that suit their own needs and preferences using the price slider and the interactive brushing feature. Before making a decision, it may be helpful to compare costs and features across multiple platforms because this visualization only includes Airbnb rentals and excludes other possibilities like hotels or vacation rentals.
+
+# [Geospatial Datasets]
+
+**a.)**
+NYC Building Footprints - Vector data format. This dataset contains polygon geometries representing the footprints of buildings in New York City. Polygon geometries are used to represent areas, such as buildings or regions, in vector data formats.
+
+**b.)**
+Africa Population 2020 - Raster data format. This dataset is likely to be in a raster data format because it represents population density across the entire continent of Africa.
+
+**c.)**
+Himalayan Glacial Lakes - Vector data format. This dataset contains point geometries representing the locations of glacial lakes in the Himalayan region. Point geometries are used to represent individual locations or points of interest in vector data formats.
+
+**d.)**
+US EV Charging - Vector data format. This dataset is likely to be in a vector data format because it contains information about the location and attributes of EV charging stations across the United States. Point geometries are commonly used to represent locations in vector data formats.
+
+**e.)**
+Zion Elevation - Raster data format. This dataset is likely to be in a raster data format because it represents elevation across the Zion National Park area.
+
+# [Olympics Interactive App]
+
+**a.)**
+
+Below is the code needed to update the scatterplot depending on what sport you select. server <- function(input, output) {
+  output$scatterplot <- renderPlot({
+    filtered_olympics <- olympics %>% 
+      filter(Sport %in% input$dropdown)
+    
+    filtered_olympics$selected <- as.integer(filtered_olympics$Sport %in% input$dropdown)
+    
+    scatterplot(filtered_olympics)
+  })
+}
+
+**b.)**
+
+I would use the filtered_olympics reactive expression, which filters the dataset based on the selected sports, and add a new one, selected_athletes, which selects the relevant columns for the selected athletes. I would then use these reactive expressions to generate both the scatterplot and the data table. This approach minimizes code duplication by allowing me to reuse the filtered dataset in both outputs.
+
+
+
